@@ -1,4 +1,6 @@
+import 'dart:convert'; // Needed to parse JSON responses from the API
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http; // Needed to make network requests
 
 void main() {
   runApp(const BristleApp());
@@ -23,49 +25,6 @@ class BristleApp extends StatelessWidget {
   }
 }
 
-// ─── Cybersecurity tips by category ─────────────────────────────────────────
-
-// Each key is a category name shown on the chip buttons.
-// Each value is the ordered list of tips for that category.
-// To add a new category, add a new key-value pair here.
-const Map<String, List<String>> _tipsByCategory = {
-  'Passwords': [
-    'Use a unique password for every account. Reusing passwords means one breach exposes all of them.',
-    'A password manager (such as Bitwarden or 1Password) remembers strong passwords so you don\'t have to.',
-    'Make passwords long: 16+ characters is much harder to crack than 8, even with random characters.',
-    'Never share your password over email, text, chat, or phone call. No legitimate service will ever ask for it.',
-    'Turn on two-factor authentication (2FA) so a stolen password alone can\'t unlock your account.',
-    'Avoid using personal info in passwords. Birthdays, pet names, and addresses are easy to guess.',
-  ],
-  'Phishing': [
-    'Never click links in unexpected emails or texts. Go directly to the website by typing the address.',
-    'Check the sender\'s full email address, not just their display name. Attackers can fake the display name easily.',
-    'Urgency is often a red flag. "Act now or your account will be closed!" is a classic phishing tactic.',
-    'On a computer, hovering over a link often shows the real destination URL before you click. This does not work on mobile, so be extra cautious there.',
-    'When in doubt, call the company directly using a number from their official website, not from the email.',
-    'Phishing attacks also arrive via text (smishing) and phone calls (vishing). Stay alert on all channels.',
-  ],
-  'Mobile': [
-    'Lock your phone with a PIN, password, or biometrics. It is your first line of defense if it is lost.',
-    'Only install apps from official stores (App Store / Google Play) and check reviews before installing.',
-    'Review app permissions. A flashlight app has no reason to access your contacts or microphone.',
-    'Keep your phone\'s operating system updated; updates often include critical security patches.',
-    'Use a VPN on public Wi-Fi to keep your browsing private from others on the same network.',
-    'Enable remote wipe so you can erase your phone\'s data if it is stolen.',
-  ],
-  'Physical': [
-    'Lock your screen whenever you step away from your computer, even for just a minute.',
-    'Be aware of shoulder surfers in public places; tilt your screen or use a privacy filter.',
-    'Don\'t leave your laptop or phone unattended in public, even briefly.',
-    'Shred documents containing personal information rather than putting them in the trash.',
-    'Never plug in a USB drive you find or receive unexpectedly. They can carry malware and compromise your device.',
-    'Use WPA3 if your router supports it, or WPA2 at minimum, and always change the default admin password.',
-  ],
-};
-
-// The list of category names, derived from the map so it stays in sync automatically.
-final List<String> _categories = _tipsByCategory.keys.toList();
-
 // ─── Home screen ────────────────────────────────────────────────────────────
 
 class HomeScreen extends StatefulWidget {
@@ -76,21 +35,88 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Which category chip is highlighted. Starts on the first category.
-  String _selectedCategory = _categories.first;
+  // The base URL of your FastAPI server. Update this if your IP changes.
+  static const _apiBase = 'http://18.144.144.119';
 
-  // Index of the tip currently on screen within the selected category.
+  // Tips loaded from the API. Null means we haven't loaded them yet.
+  // Once loaded it looks like: {"Passwords": ["tip1", "tip2"], "Phishing": [...], ...}
+  Map<String, List<String>>? _tipsByCategory;
+
+  // True while the network request is in flight.
+  bool _isLoading = true;
+
+  // If the API call fails, this holds a friendly message to show the user.
+  // Null means no error.
+  String? _errorMessage;
+
+  // Which category chip is currently highlighted.
+  // Nullable because we don't know the first category until the data loads.
+  String? _selectedCategory;
+
+  // Index of the tip currently shown within the selected category.
   int _tipIndex = 0;
 
-  // Whether the user has interacted yet. False = show the welcome prompt.
-  // Becomes true the first time a chip or arrow is tapped.
+  // Whether the user has tapped anything yet. False = show the welcome prompt.
   bool _started = false;
 
-  // The text shown inside the tip card.
-  // Before any interaction it shows a welcome message; after that, the real tip.
-  String get _tipText => _started
-      ? _tipsByCategory[_selectedCategory]![_tipIndex]
-      : 'Pick a category above,\nthen tap an arrow to browse tips!';
+  // A handy getter so we can write _categories anywhere without repeating this logic.
+  List<String> get _categories => _tipsByCategory?.keys.toList() ?? [];
+
+  // initState runs once when the widget is first created — perfect for startup work.
+  @override
+  void initState() {
+    super.initState();
+    _loadTips(); // Kick off the network request immediately on startup
+  }
+
+  // Fetches all tips from GET /tips and stores them in state.
+  // Also called by the "Try Again" button when there's an error.
+  Future<void> _loadTips() async {
+    // Show the spinner and clear any previous error before (re)trying.
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      // Make the GET request. Uri.parse turns the string into a proper URL object.
+      final response = await http.get(Uri.parse('$_apiBase/tips'));
+
+      if (response.statusCode == 200) {
+        // response.body is a raw JSON string. jsonDecode turns it into a Dart Map.
+        // The API returns: {"Passwords": ["tip1", ...], "Phishing": [...], ...}
+        final rawJson = jsonDecode(response.body) as Map<String, dynamic>;
+
+        // Convert each value from List<dynamic> to List<String> so Dart is happy.
+        final loaded = rawJson.map(
+          (category, tips) => MapEntry(
+            category,
+            (tips as List).map((t) => t.toString()).toList(),
+          ),
+        );
+
+        setState(() {
+          _tipsByCategory = loaded;
+          _selectedCategory = loaded.keys.first; // default chip on first category
+          _isLoading = false;
+        });
+      } else {
+        // The server responded but with an unexpected status code (e.g. 500).
+        setState(() {
+          _errorMessage =
+              'The server returned an error (status ${response.statusCode}).\nPlease try again.';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      // A network exception: no connection, DNS failure, timeout, etc.
+      setState(() {
+        _errorMessage =
+            'Could not reach the server.\nCheck your connection and try again.';
+        _isLoading = false;
+      });
+    }
+  }
 
   // Called when the user taps a category chip.
   void _selectCategory(String category) {
@@ -103,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Called when the user taps the back (left) arrow.
   void _goBack() {
-    final tips = _tipsByCategory[_selectedCategory]!;
+    final tips = _tipsByCategory![_selectedCategory!]!;
     setState(() {
       if (!_started) {
         // First interaction via back: jump to the last tip.
@@ -118,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Called when the user taps the forward (right) arrow.
   void _goForward() {
-    final tips = _tipsByCategory[_selectedCategory]!;
+    final tips = _tipsByCategory![_selectedCategory!]!;
     setState(() {
       if (!_started) {
         // First interaction via forward: show tip 0.
@@ -133,8 +159,73 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // ── State 1: Loading ───────────────────────────────────────────────────
+    // Show a spinner while the API call is in flight.
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          title: const Text('Bristle'),
+          centerTitle: true,
+        ),
+        body: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Loading tips...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // ── State 2: Error ─────────────────────────────────────────────────────
+    // Show a friendly message and a retry button — never crash.
+    if (_errorMessage != null) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          title: const Text('Bristle'),
+          centerTitle: true,
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.wifi_off, size: 64, color: Colors.grey),
+                const SizedBox(height: 16),
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: _loadTips, // tap to retry the API call
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try Again'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ── State 3: Loaded ────────────────────────────────────────────────────
+    // Data is ready — show the normal UI exactly as before.
+
     // Total tips in the currently selected category (used for the counter).
-    final tipCount = _tipsByCategory[_selectedCategory]!.length;
+    final tipCount = _tipsByCategory![_selectedCategory!]!.length;
+
+    // The text shown in the tip card.
+    final tipText = _started
+        ? _tipsByCategory![_selectedCategory!]![_tipIndex]
+        : 'Pick a category above,\nthen tap an arrow to browse tips!';
 
     return Scaffold(
       appBar: AppBar(
@@ -150,7 +241,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // stretch makes children fill the full width so chips stay centred.
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Mascot ────────────────────────────────────────────────────
+            // ── Mascot ──────────────────────────────────────────────────────
             Center(
               child: Image.asset(
                 'assets/bristle_mascot.png',
@@ -169,7 +260,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 28),
 
-            // ── Category chips ─────────────────────────────────────────────
+            // ── Category chips ───────────────────────────────────────────────
+            // _categories is now derived from the API response, not hardcoded.
             Center(
               child: Text(
                 'Choose a category:',
@@ -198,9 +290,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 28),
 
-            // ── Tip card ───────────────────────────────────────────────────
-            // The card uses a fixed height so the buttons below never move,
-            // regardless of whether the tip text is short or long.
+            // ── Tip card ─────────────────────────────────────────────────────
+            // Fixed height so the buttons below never jump around.
             Card(
               elevation: 4,
               child: SizedBox(
@@ -211,7 +302,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 16),
                     child: Text(
-                      _tipText,
+                      tipText,
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyLarge,
                     ),
@@ -222,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 20),
 
-            // ── Navigation: back arrow | counter | forward arrow ───────────
+            // ── Navigation: back arrow | counter | forward arrow ─────────────
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -234,8 +325,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
 
                 // Counter — shows "2 / 6" once interaction has started.
-                // A fixed-width SizedBox prevents the counter from shifting
-                // the arrows left or right as the number changes.
+                // Fixed width prevents the arrows from shifting as the number changes.
                 SizedBox(
                   width: 64,
                   child: Text(
